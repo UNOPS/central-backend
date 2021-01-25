@@ -6,6 +6,7 @@ const superagent = require('superagent');
 const { DateTime } = require('luxon');
 const { testService } = require('../setup');
 const testData = require('../../data/xml');
+const { exhaust } = require(appRoot + '/lib/worker/worker');
 
 describe('api: /projects/:id/forms', () => {
 
@@ -48,6 +49,11 @@ describe('api: /projects/:id/forms', () => {
   });
 
   describe('../formList GET', () => {
+    it('should reject if there is no authentication', testService((service) =>
+      service.get('/v1/projects/1/formList')
+        .set('X-OpenRosa-Version', '1.0')
+        .expect(401)));
+
     it('should return no results if the user cannot read', testService((service) =>
       service.login('chelsea', (asChelsea) =>
         asChelsea.get('/v1/projects/1/formList')
@@ -88,6 +94,43 @@ describe('api: /projects/:id/forms', () => {
   </xforms>`);
           }))));
 
+    it('should return only return matching form given formID=', testService((service) =>
+      service.login('alice', (asAlice) =>
+        asAlice.get('/v1/projects/1/formList?formID=withrepeat')
+          .set('X-OpenRosa-Version', '1.0')
+          .expect(200)
+          .then(({ text, headers }) => {
+            // Collect is particular about this:
+            headers['content-type'].should.equal('text/xml; charset=utf-8');
+
+            const domain = config.get('default.env.domain');
+            text.should.equal(`<?xml version="1.0" encoding="UTF-8"?>
+  <xforms xmlns="http://openrosa.org/xforms/xformsList">
+    <xform>
+      <formID>withrepeat</formID>
+      <name>withrepeat</name>
+      <version>1.0</version>
+      <hash>md5:e7e9e6b3f11fca713ff09742f4312029</hash>
+      <downloadUrl>${domain}/v1/projects/1/forms/withrepeat.xml</downloadUrl>
+    </xform>
+  </xforms>`);
+          }))));
+
+    it('should return nothing given a nonmatching formID=', testService((service) =>
+      service.login('alice', (asAlice) =>
+        asAlice.get('/v1/projects/1/formList?formID=xyz')
+          .set('X-OpenRosa-Version', '1.0')
+          .expect(200)
+          .then(({ text, headers }) => {
+            // Collect is particular about this:
+            headers['content-type'].should.equal('text/xml; charset=utf-8');
+
+            const domain = config.get('default.env.domain');
+            text.should.equal(`<?xml version="1.0" encoding="UTF-8"?>
+  <xforms xmlns="http://openrosa.org/xforms/xformsList">
+  </xforms>`);
+          }))));
+
     it('should return auth-filtered results for app users', testService((service) =>
       service.login('alice', (asAlice) =>
         asAlice.post('/v1/projects/1/app-users')
@@ -97,6 +140,34 @@ describe('api: /projects/:id/forms', () => {
           .then((fk) => asAlice.post(`/v1/projects/1/forms/withrepeat/assignments/app-user/${fk.id}`)
             .expect(200)
             .then(() => service.get(`/v1/key/${fk.token}/projects/1/formList`)
+              .set('X-OpenRosa-Version', '1.0')
+              .expect(200)
+              .then(({ text, headers }) => {
+                // Collect is particular about this:
+                headers['content-type'].should.equal('text/xml; charset=utf-8');
+
+                const domain = config.get('default.env.domain');
+                text.should.equal(`<?xml version="1.0" encoding="UTF-8"?>
+  <xforms xmlns="http://openrosa.org/xforms/xformsList">
+    <xform>
+      <formID>withrepeat</formID>
+      <name>withrepeat</name>
+      <version>1.0</version>
+      <hash>md5:e7e9e6b3f11fca713ff09742f4312029</hash>
+      <downloadUrl>${domain}/v1/key/${fk.token}/projects/1/forms/withrepeat.xml</downloadUrl>
+    </xform>
+  </xforms>`);
+              }))))));
+
+    it('should prefix returned routes for app users', testService((service) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/app-users')
+          .send({ displayName: 'test' })
+          .expect(200)
+          .then(({ body }) => body)
+          .then((fk) => asAlice.post(`/v1/projects/1/forms/withrepeat/assignments/app-user/${fk.id}`)
+            .expect(200)
+            .then(() => service.get(`/v1/projects/1/formList?st=${fk.token}`)
               .set('X-OpenRosa-Version', '1.0')
               .expect(200)
               .then(({ text, headers }) => {
@@ -494,6 +565,34 @@ describe('api: /projects/:id/forms', () => {
               body.draftToken.should.be.a.token();
             })))));
 
+    it('should worker-process the form draft over to enketo', testService((service, container) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms')
+          .set('Content-Type', 'application/xml')
+          .send(testData.forms.simple2)
+          .expect(200)
+          .then(() => exhaust(container))
+          .then(() => asAlice.get('/v1/projects/1/forms/simple2/draft')
+            .expect(200)
+            .then(({ body }) => {
+              body.enketoId.should.equal('::abcdefgh');
+              should.not.exist(body.enketoOnceId);
+            })))));
+
+    it('should worker-process the published form over to enketo', testService((service, container) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms?publish=true')
+          .set('Content-Type', 'application/xml')
+          .send(testData.forms.simple2)
+          .expect(200)
+          .then(() => exhaust(container))
+          .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+            .expect(200)
+            .then(({ body }) => {
+              body.enketoId.should.equal('::abcdefgh');
+              body.enketoOnceId.should.equal('::::abcdefgh');
+            })))));
+
     it('should if flagged save the given definition as published', testService((service) =>
       service.login('alice', (asAlice) =>
         asAlice.post('/v1/projects/1/forms?publish=true')
@@ -526,15 +625,29 @@ describe('api: /projects/:id/forms', () => {
 
     it('should log the action in the audit log', testService((service) =>
       service.login('alice', (asAlice) =>
-        asAlice.post('/v1/projects/1/forms?publish=true')
+        asAlice.post('/v1/projects/1/forms')
           .send(testData.forms.simple2)
           .set('Content-Type', 'application/xml')
           .expect(200)
-          .then(() => asAlice.get('/v1/audits?action/form')
+          .then(() => asAlice.get('/v1/audits?action=form')
             .expect(200)
             .then(({ body }) => {
               body.length.should.equal(1);
               body[0].action.should.equal('form.create');
+            })))));
+
+    it('should log both actions in the audit log on publish=true', testService((service) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms?publish=true')
+          .send(testData.forms.simple2)
+          .set('Content-Type', 'application/xml')
+          .expect(200)
+          .then(() => asAlice.get('/v1/audits?action=form')
+            .expect(200)
+            .then(({ body }) => {
+              body.length.should.equal(2);
+              body[0].action.should.equal('form.update.publish');
+              body[1].action.should.equal('form.create');
             })))));
   });
 
@@ -729,6 +842,27 @@ describe('api: /projects/:id/forms', () => {
               .then(({ body }) => {
                 body.submissions.should.equal(0);
               })))));
+
+    it('should return the correct enketoId', testService((service, container) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms?publish=true')
+          .set('Content-Type', 'application/xml')
+          .send(testData.forms.simple2)
+          .expect(200)
+          .then(() => exhaust(container))
+          .then(() => {
+            global.enketoToken = '::ijklmnop';
+            return asAlice.post('/v1/projects/1/forms/simple2/draft')
+              .expect(200)
+              .then(() => exhaust(container))
+              .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                .set('X-Extended-Metadata', true)
+                .expect(200)
+                .then(({ body }) => {
+                  body.enketoId.should.equal('::abcdefgh');
+                  body.enketoOnceId.should.equal('::::abcdefgh');
+                }));
+          }))));
     });
 
     ////////////////////////////////////////
@@ -1212,6 +1346,45 @@ describe('api: /projects/:id/forms', () => {
                     }));
               })))));
 
+    it('should worker-process the draft form over to enketo', testService((service, container) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms/simple/draft')
+          .expect(200)
+          .then(({ body }) => {
+            should.not.exist(body.enketoId);
+          })
+          .then(() => exhaust(container))
+          .then(() => asAlice.get('/v1/projects/1/forms/simple/draft')
+            .expect(200)
+            .then(({ body }) => {
+              body.enketoId.should.equal('::abcdefgh');
+              should.not.exist(body.enketoOnceId);
+              global.enketoReceivedUrl.startsWith(container.env.domain).should.equal(true);
+              global.enketoReceivedUrl.should.match(/\/v1\/test\/[a-z0-9$!]{64}\/projects\/1\/forms\/simple\/draft/i);
+            })))));
+
+    it('should manage draft/published enketo tokens separately', testService((service, container) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms?publish=true')
+          .set('Content-Type', 'application/xml')
+          .send(testData.forms.simple2)
+          .expect(200)
+          .then(() => exhaust(container))
+          .then(() => {
+            global.enketoToken = '::ijklmnop';
+            return asAlice.post('/v1/projects/1/forms/simple2/draft')
+              .expect(200)
+              .then(() => exhaust(container))
+              .then(() => Promise.all([
+                asAlice.get('/v1/projects/1/forms/simple2')
+                  .expect(200)
+                  .then(({ body }) => { body.enketoId.should.equal('::abcdefgh'); }),
+                asAlice.get('/v1/projects/1/forms/simple2/draft')
+                  .expect(200)
+                  .then(({ body }) => { body.enketoId.should.equal('::ijklmnop'); })
+              ]));
+          }))));
+
       it('should replace the draft version', testService((service) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms/simple/draft')
@@ -1386,7 +1559,7 @@ describe('api: /projects/:id/forms', () => {
       it('should complain about field conflicts', testService((service) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms/simple/draft')
-            .send(testData.forms.simple.replace('type="int"', 'type="string"'))
+            .send(testData.forms.simple.replace('type="int"', 'type="date"'))
             .set('Content-Type', 'application/xml')
             .expect(400)
             .then(({ body }) => {
@@ -1405,12 +1578,58 @@ describe('api: /projects/:id/forms', () => {
             .then(() => asAlice.post('/v1/projects/1/forms/simple/draft/publish')
               .expect(200))
             .then(() => asAlice.post('/v1/projects/1/forms/simple/draft')
-              .send(testData.forms.simple.replace('type="int"', 'type="string"'))
+              .send(testData.forms.simple.replace('type="int"', 'type="date"'))
               .set('Content-Type', 'application/xml')
               .expect(400)
               .then(({ body }) => {
                 body.code.should.equal(400.17);
                 body.details.should.eql({ path: '/age', type: 'int' });
+              })))));
+
+      it('should not complain on downcast to string', testService((service) =>
+        service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms/simple/draft')
+            .send(testData.forms.simple.replace('type="int"', 'type="string"'))
+            .set('Content-Type', 'application/xml')
+            .expect(200))));
+
+      it('should complain on upcast from string', testService((service) =>
+        service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms/simple/draft')
+            .send(testData.forms.simple.replace('name" type="string"', 'name" type="int"'))
+            .set('Content-Type', 'application/xml')
+            .expect(400)
+            .then(({ body }) => {
+              body.code.should.equal(400.17);
+              body.details.should.eql({ path: '/name', type: 'string' });
+            }))));
+
+      it('should not complain on double-downcast to string', testService((service) =>
+        service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms/simple/draft')
+            .send(testData.forms.simple.replace('type="int"', 'type="string"'))
+            .set('Content-Type', 'application/xml')
+            .expect(200)
+            .then(() => asAlice.post('/v1/projects/1/forms/simple/draft/publish?version=two')
+              .expect(200))
+            .then(() => asAlice.post('/v1/projects/1/forms/simple/draft')
+              .expect(200)))));
+
+      it('should complain on upcast once downcasted', testService((service) =>
+        service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms/simple/draft')
+            .send(testData.forms.simple.replace('type="int"', 'type="string"'))
+            .set('Content-Type', 'application/xml')
+            .expect(200)
+            .then(() => asAlice.post('/v1/projects/1/forms/simple/draft/publish?version=two')
+              .expect(200))
+            .then(() => asAlice.post('/v1/projects/1/forms/simple/draft')
+            .send(testData.forms.simple)
+              .set('Content-Type', 'application/xml')
+              .expect(400)
+              .then(({ body }) => {
+                body.code.should.equal(400.17);
+                body.details.should.eql({ path: '/age', type: 'string' });
               })))));
 
       it('should not complain about discarded draft field conflicts', testService((service) =>
@@ -1575,6 +1794,24 @@ describe('api: /projects/:id/forms', () => {
                 body.lastSubmission.should.be.a.recentIsoDate();
               })))));
 
+    it('should return the correct enketoId with extended draft', testService((service, container) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms?publish=true')
+          .set('Content-Type', 'application/xml')
+          .send(testData.forms.simple2)
+          .expect(200)
+          .then(() => exhaust(container))
+          .then(() => {
+            global.enketoToken = '::ijklmnop';
+            return asAlice.post('/v1/projects/1/forms/simple2/draft')
+              .expect(200)
+              .then(() => exhaust(container))
+              .then(() => asAlice.get('/v1/projects/1/forms/simple2/draft')
+                .set('X-Extended-Metadata', true)
+                .expect(200)
+                .then(({ body }) => { body.enketoId.should.equal('::ijklmnop'); }));
+          }))));
+
       it('should not count nondraft submissions in its count', testService((service) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms/simple/draft')
@@ -1626,22 +1863,17 @@ describe('api: /projects/:id/forms', () => {
                 body.version.should.equal('');
               })))));
 
-      it('should delete the draft even if there is no published version', testService((service) =>
+      it('should conflict if there is no published version', testService((service) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms')
             .send(testData.forms.simple2)
             .set('Content-Type', 'application/xml')
             .expect(200)
             .then(() => asAlice.delete('/v1/projects/1/forms/simple2/draft')
-              .expect(200))
-            .then(() => asAlice.get('/v1/projects/1/forms/simple2/draft')
-              .expect(404))
-            .then(() => asAlice.get('/v1/projects/1/forms/simple2')
-              .expect(200)
+              .expect(409))
               .then(({ body }) => {
-                body.xmlFormId.should.equal('simple2');
-                should.not.exist(body.version);
-              })))));
+                body.code.should.equal(409.5);
+              }))));
 
       it('should create a new draft token after delete', testService((service) =>
         service.login('alice', (asAlice) =>
@@ -2173,6 +2405,25 @@ describe('api: /projects/:id/forms', () => {
               .expect(200)
               .then(({ body }) => { body.should.eql([]); })))));
 
+      it('should not give an enketoId', testService((service, container) =>
+        service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms?publish=true')
+            .set('Content-Type', 'application/xml')
+            .send(testData.forms.simple2)
+            .expect(200)
+            .then(() => exhaust(container))
+            .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+              .expect(200))
+            .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft/publish?version=3')
+              .expect(200))
+            .then(() => asAlice.get('/v1/projects/1/forms/simple2/versions')
+              .expect(200)
+              .then(({ body }) => {
+                body.map((f) => f.version).should.eql([ '3', '2.1' ]);
+                body.map((f) => f.enketoId).should.eql([ '::abcdefgh', undefined ]);
+                body.map((f) => f.enketoOnceId).should.eql([ '::::abcdefgh', undefined ]);
+              })))));
+
       it('should return publishedBy if extended is requested', testService((service) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms/simple/draft')
@@ -2219,6 +2470,25 @@ describe('api: /projects/:id/forms', () => {
                   null,
                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                 ]);
+              })))));
+
+      it('should not give an enketoId with extended details', testService((service, container) =>
+        service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms?publish=true')
+            .set('Content-Type', 'application/xml')
+            .send(testData.forms.simple2)
+            .expect(200)
+            .then(() => exhaust(container))
+            .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+              .expect(200))
+            .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft/publish?version=3')
+              .expect(200))
+            .then(() => asAlice.get('/v1/projects/1/forms/simple2/versions')
+              .set('X-Extended-Metadata', true)
+              .expect(200)
+              .then(({ body }) => {
+                body.map((f) => f.version).should.eql([ '3', '2.1' ]);
+                body.map((f) => f.enketoId).should.eql([ '::abcdefgh', undefined ]);
               })))));
 
       it('should sort results desc by publishedAt', testService((service) =>
@@ -2585,10 +2855,12 @@ describe('api: /projects/:id/forms', () => {
 
       it('should reject if the draft has been deleted', testService((service) =>
         service.login('alice', (asAlice) =>
-          asAlice.post('/v1/projects/1/forms')
+          asAlice.post('/v1/projects/1/forms?publish=true')
             .send(testData.forms.withAttachments)
             .set('Content-Type', 'application/xml')
             .expect(200)
+            .then(() => asAlice.post('/v1/projects/1/forms/withAttachments/draft')
+              .expect(200))
             .then(() => asAlice.post('/v1/projects/1/forms/withAttachments/draft/attachments/goodone.csv')
               .send('test,csv\n1,2')
               .set('Content-Type', 'text/csv')
@@ -2687,12 +2959,12 @@ describe('api: /projects/:id/forms', () => {
           asAlice.post('/v1/projects/1/forms/simple/draft')
             .expect(200)
             .then(() => asAlice.get('/v1/projects/1/forms/simple/draft')
+              .expect(200))
+            .then(({ body }) => body.draftToken)
+            .then((token) => asAlice.delete('/v1/projects/1/forms/simple/draft')
               .expect(200)
-              .then(({ body }) => body.draftToken)
-              .then((token) => asAlice.delete('/v1/projects/1/forms/simple/draft')
-                .expect(200)
-                .then(() => service.get(`/v1/test/${token}/projects/1/forms/simple/draft.xml`)
-                  .expect(404)))))));
+              .then(() => service.get(`/v1/test/${token}/projects/1/forms/simple/draft.xml`)
+                .expect(404))))));
 
       it('should reject if the key is wrong', testService((service) =>
         service.login('alice', (asAlice) =>
@@ -2735,10 +3007,12 @@ describe('api: /projects/:id/forms', () => {
 
       it('should reject if the draft has been deleted', testService((service) =>
         service.login('alice', (asAlice) =>
-          asAlice.post('/v1/projects/1/forms')
+          asAlice.post('/v1/projects/1/forms?publish=true')
             .send(testData.forms.withAttachments)
             .set('Content-Type', 'application/xml')
             .expect(200)
+            .then(() => asAlice.post('/v1/projects/1/forms/withAttachments/draft')
+              .expect(200))
             .then(() => asAlice.post('/v1/projects/1/forms/withAttachments/draft/attachments/goodone.csv')
               .send('test,csv\n1,2')
               .set('Content-Type', 'text/csv')

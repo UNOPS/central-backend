@@ -1,7 +1,9 @@
+const appRoot = require('app-root-path');
 const should = require('should');
 const { testService } = require('../setup');
 const testData = require('../../data/xml');
 const { QueryOptions } = require('../../../lib/util/db');
+const { exhaust } = require(appRoot + '/lib/worker/worker');
 
 describe('api: /projects', () => {
   describe('GET', () => {
@@ -271,6 +273,25 @@ describe('api: /projects', () => {
               body.lastSubmission.should.be.a.recentIsoDate();
             })))));
 
+    it('should not count deleted app users', testService((service) =>
+      service.login('alice', (asAlice) =>
+        Promise.all([
+          asAlice.post(`/v1/projects/1/app-users`)
+            .send({ displayName: 'test 1' })
+            .expect(200)
+            .then(({ body }) => asAlice.delete(`/v1/projects/1/app-users/${body.id}`)
+              .expect(200)),
+          asAlice.post(`/v1/projects/1/app-users`)
+            .send({ displayName: 'test 2' })
+            .expect(200)
+        ])
+          .then(() => asAlice.get('/v1/projects/1')
+            .set('X-Extended-Metadata', 'true')
+            .expect(200)
+            .then(({ body }) => {
+              body.appUsers.should.equal(1);
+            })))));
+
     it('should not return verb information unless extended metata is requested', testService((service) =>
       service.login('alice', (asAlice) =>
         asAlice.get('/v1/projects/1')
@@ -284,7 +305,7 @@ describe('api: /projects', () => {
           .expect(200)
           .then(({ body }) => {
             body.verbs.should.be.an.Array();
-            body.verbs.length.should.be.greaterThan(30);
+            body.verbs.length.should.be.greaterThan(34);
             body.verbs.should.containDeep([ 'user.password.invalidate', 'project.delete' ]);
           }))));
 
@@ -295,7 +316,7 @@ describe('api: /projects', () => {
           .expect(200)
           .then(({ body }) => {
             body.verbs.should.be.an.Array();
-            body.verbs.length.should.be.lessThan(20);
+            body.verbs.length.should.be.lessThan(25);
             body.verbs.should.containDeep([ 'assignment.create', 'project.delete' ]);
             body.verbs.should.not.containDeep([ 'project.create' ]);
           }))));
@@ -937,6 +958,81 @@ describe('api: /projects', () => {
                 .expect(200)
                 .then(({ body }) => { body.should.eql([]); })
             ])))))));
+
+    it('should not delete enketo formviewer assignments', testService((service, container) =>
+      service.login('bob', (asBob) => asBob.post('/v1/projects/1/app-users')
+        .send({ displayName: 'test app user' })
+        .expect(200)
+        .then(({ body }) => body)
+        .then((fk) => Promise.all([
+          asBob.post(`/v1/projects/1/forms/simple/assignments/app-user/${fk.id}`)
+            .expect(200),
+          asBob.post(`/v1/projects/1/forms/withrepeat/assignments/manager/${fk.id}`)
+            .expect(200),
+          asBob.post(`/v1/projects/1/forms?publish=true`)
+            .send(testData.forms.simple2)
+            .set('Content-Type', 'application/xml')
+            .expect(200)
+        ])
+          .then(() => exhaust(container))
+          .then(() => asBob.put('/v1/projects/1')
+            .set('Content-Type', 'application/json')
+            .send({
+              name: 'Default Project',
+              forms: [{
+                xmlFormId: 'simple', name: 'New Simple', state: 'closed',
+                assignments: []
+              }, {
+                xmlFormId: 'simple2', name: 'New New Simple', state: 'open',
+                assignments: []
+              }, {
+                xmlFormId: 'withrepeat', name: 'New Repeat', state: 'closing',
+                assignments: []
+              }]
+            })
+            .expect(200)
+            .then(() => Promise.all([
+              asBob.get('/v1/projects/1/forms/simple/assignments')
+                .expect(200)
+                .then(({ body }) => { body.should.eql([]); }),
+              container.Form.getByProjectAndXmlFormId(1, 'simple2')
+                .then((o) => o.get())
+                .then(({ acteeId }) => container.Assignment.getByActeeId(acteeId))
+                .then((result) => {
+                  result.length.should.equal(1);
+                }),
+              asBob.get('/v1/projects/1/forms/withrepeat/assignments')
+                .expect(200)
+                .then(({ body }) => { body.should.eql([]); })
+            ])))))));
+
+    it('should not delete public link assignments', testService((service, container) =>
+      service.login('bob', (asBob) => asBob.post('/v1/projects/1/forms/simple/public-links')
+        .send({ displayName: 'test link' })
+        .expect(200)
+        .then(() => asBob.put('/v1/projects/1')
+          .set('Content-Type', 'application/json')
+          .send({
+            name: 'Default Project',
+            forms: [{
+              xmlFormId: 'simple', name: 'New Simple', state: 'closed',
+              assignments: []
+            }, {
+              xmlFormId: 'withrepeat', name: 'New Repeat', state: 'closing',
+              assignments: []
+            }]
+          })
+          .expect(200)
+          .then(() => Promise.all([
+            asBob.get('/v1/projects/1/forms/simple/assignments')
+              .expect(200)
+              .then(({ body }) => {
+                body.length.should.equal(1);
+              }),
+            asBob.get('/v1/projects/1/forms/withrepeat/assignments')
+              .expect(200)
+              .then(({ body }) => { body.should.eql([]); })
+          ]))))));
 
     it('should log the deletion action in the audit log', testService((service, { Actor, Audit, Project }) =>
       service.login('bob', (asBob) => asBob.post('/v1/projects/1/app-users')

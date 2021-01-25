@@ -32,6 +32,43 @@ Finally, **system information and configuration** is available via a set of spec
 
 Here major and breaking changes to the API are listed by version.
 
+### ODK Central v1.1
+
+ODK Central v1.1 adds minor new features to the API.
+
+**Added**:
+
+* `POST`/`GET /backup`, will immediately perform a backup of the database and return the encrypted backup.
+* `POST`/`GET /projects/…/forms/…/submissions.csv`, which allows download of the root table (excluding repeat data) as CSV, without a zipfile.
+* `POST`/`GET /projects/…/forms/…/submissions.csv.zip` now allows `?media=false` to exclude attachments.
+* OData Data Document requests now allow limited use of `$filter`.
+* The various `submissions.csv.*` endpoints also allow `$filter`, using the same limited OData syntax.
+* `GET /projects/…/forms/…/submissions/submitters` which returns submitter Actors for a given Form.
+
+**Fixed**:
+* Documented the `deviceId` property of submission, which was added in version 0.4.
+
+### ODK Central v1.0
+
+ODK Central v1.0 adds Public Links to the API, and makes one minor breaking change.
+
+**Added**:
+
+* The new [Public Link](/reference/forms-and-submissions/'-public-access-links) resource lets you create Public Access Links, granting anonymous browser-based access to submit to your Forms using Enketo.
+
+**Changed**:
+
+* The non-extended App User response no longer includes a `createdBy` numeric ID. To retrieve the creator of an App User, request the extended response.
+* We no longer reject the request if multiple authentication schemes are presented, and instead document the priority order of the different schemes [here](/reference/authentication).
+
+### ODK Central v0.9
+
+ODK Central v0.9 does not change the API except for one minor breaking change.
+
+**Changed**:
+
+* The [OpenRosa Form Listing API](/reference/openrosa-endpoints/openrosa-form-listing-api) has been modified to always require authentication. If a valid Actor is authenticated at all, a form list will always be returned, filtered by what that Actor is allowed to access.
+
 ### ODK Central v0.8
 
 ODK Central v0.8 introduces Draft Forms, publishing, and archived Form versions, which has a significant breaking impact on the existing API. The changes should be straightforward to adapt to, however. If you are currently creating Forms with `POST /projects/…/forms`, you may wish to add `?publish=true` to skip the Draft state and mimic the old behaviour. If you are using the API to push Form Attachments onto Forms, you'll only be able to do so now in draft state, at `/projects/…/forms/…/draft/attachments`.
@@ -153,7 +190,7 @@ In practice, there are two types of Actors available in the system today:
 
 In a future version of the API, programmatic consumers will be more directly supported as their own Actor type, which can be granted limited permissions and can authenticate over **OAuth 2.0**.
 
-Next, you will find documentation on each of the three authentication methods described above.
+Next, you will find documentation on each of the three authentication methods described above. It is best not to present multiple credentials. If you do, the first _presented_ scheme out of `/key` token, Bearer, Basic, then Cookie will be used for the request. If the multiple schemes are sent at once, and the first matching scheme fails, the request will be immediately rejected.
 
 ## Session Authentication [/v1/sessions]
 
@@ -207,7 +244,7 @@ _(There is not really anything at `/v1/example`; this section only demonstrates 
 
 #### Logging out [DELETE /v1/sessions/{token}]
 
-Logging out is not strictly necessary; all sessions expire 24 hours after they are created. But it can be a good idea, in case someone else manages to steal your token. To do so, issue a `DELETE` request to that token resource.
+Logging out is not strictly necessary for Web Users; all sessions expire 24 hours after they are created. But it can be a good idea, in case someone else manages to steal your token. It is also the way Public Link and App User access are revoked. To do so, issue a `DELETE` request to that token resource.
 
 + Parameters
     + token: `lSpAIeksRu1CNZs7!qjAot2T17dPzkrw9B4iTtpj7OoIJBmXvnHM8z8Ka4QPEjR7` (string, required) - The session bearer token, obtained at login time.
@@ -293,7 +330,9 @@ Today, there are two types of accounts: `Users`, which are the administrative ac
 
 Actors (and thus Users) may be granted rights via Roles. The `/roles` Roles API is open for all to access, which describes all defined roles on the server. Getting information for an individual role from that same API will reveal which verbs are associated with each role: some role might allow only `submission.create` and `submission.update`, for example.
 
-Right now, there are three predefined system roles: Administrator (`admin`), Project Manager (`manager`), and App User (`app-user`). Administrators are allowed to perform any action upon the server, while Project Managers are allowed to perform any action upon the projects they are assigned to manage. App Users are granted minimal rights: they can read Form data and create new Submissions on those Forms.
+Right now, there are four predefined system roles: Administrator (`admin`), Project Manager (`manager`), Data Collector (`formfill`), and App User (`app-user`). Administrators are allowed to perform any action upon the server, while Project Managers are allowed to perform any action upon the projects they are assigned to manage.
+
+Data Collectors can see all Forms in a Project and submit to them, but cannot see Submissions and cannot edit Form settings. Similarly, App Users are granted minimal rights: they can read Form data and create new Submissions on those Forms. While Data Collectors can perform these actions directly on the Central administration website by logging in, App Users can only do these things through Collect or a similar data collection client device.
 
 The Roles API alone does not, however, tell you which Actors have been assigned with Roles upon which system objects. For that, you will need to consult the various Assignments resources. There are two, one under the API root (`/v1/assignments`), which manages assignments to the entire system, and another nested under each Project (`/v1/projects/…/assignments`) which manage assignments to that Project.
 
@@ -495,7 +534,7 @@ For more information about the `/projects` containing resource, please see the f
 
 Currently, there are no paging or filtering options, so listing `App User`s will get you every App User in the system, every time.
 
-This endpoint supports retrieving extended metadata; provide a header `X-Extended-Metadata: true` to additionally retrieve the `lastUsed` timestamp of each App User, as well as to inflate the `createdBy` from an `Actor` ID reference to an actual Actor metadata object.
+This endpoint supports retrieving extended metadata; provide a header `X-Extended-Metadata: true` to additionally retrieve the `lastUsed` timestamp of each App User, as well as to retrieve the details of the `Actor` the App User was `createdBy`.
 
 + Response 200 (application/json)
     This is the standard response, if Extended Metadata is not requested:
@@ -1011,8 +1050,6 @@ For XLSForm upload, either `.xls` or `.xlsx` are accepted. You must provide the 
 
 By default, any XLSForm conversion Warnings will fail this request and return the warnings rather than use the converted XML to create a form. To override this behaviour, provide a querystring flag `?ignoreWarnings=true`. Conversion Errors will always fail this request.
 
-If the combination of (`xmlFormId`, `version`) conflict with any existing Form, current or deleted, the request will be rejected with error code `409`. We consider even deleted forms when enforcing this restriction to prevent confusion in case a survey client already has the other version of that Form downloaded.
-
 The API will currently check the XML's structure in order to extract the information we need about it, but ODK Central does _not_ run comprehensive validation on the full contents of the XML to ensure compliance with the ODK specification. Future versions will likely do this, but in the meantime you will have to use a tool like [ODK Validate](https://opendatakit.org/use/validate/) to be sure your Forms are correct.
 
 + Parameters
@@ -1245,7 +1282,7 @@ Draft Forms allow you to test and fix issues with Forms before they are finalize
 
 You can create or replace the current Draft Form at any time by `POST`ing to the `/draft` subresource on the Form, and you can publish the current Draft by `POST`ing to `/draft/publish`.
 
-When a Draft Form is created, a Draft Token is also created for it, which can be found in Draft Form responses at `draftToken`. This token allows you to [submit test Submissions to the Draft Form](TODO) through clients like Collect. If the Draft is published or deleted, the token will be deactivated. But if you replace the Draft without first deleting it, the existing Draft Token will be carried forward, so that you do not have to reconfigure your device.
+When a Draft Form is created, a Draft Token is also created for it, which can be found in Draft Form responses at `draftToken`. This token allows you to [submit test Submissions to the Draft Form](/reference/forms-and-submissions/'-draft-submissions/creating-a-submission) through clients like Collect. If the Draft is published or deleted, the token will be deactivated. But if you replace the Draft without first deleting it, the existing Draft Token will be carried forward, so that you do not have to reconfigure your device.
 
 + Parameters
     + projectId: `1` (number, required) - The `id` of the Project this Form belongs to.
@@ -1491,6 +1528,8 @@ Once the Draft is published, there will no longer be a Draft version of the form
 
 Once a Draft Form is deleted, its definition and any Form Attachments associated with it will be removed.
 
+You will not be able to delete the draft if there is no published version of the form.
+
 + Response 200 (application/json)
     + Attributes (Success)
 
@@ -1656,7 +1695,7 @@ There are only one set of Roles, applicable to either scenario. There are not a 
 
 + Parameters
     + projectId: `2` (number, required) - The numeric ID of the Project
-    + xmlFormId: `simple` (string, required) - The friendly name of this form. It is given by the `<title>` in the XForms XML definition.
+    + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
 
 ### Listing all Form Assignments [GET]
 
@@ -1704,7 +1743,7 @@ No `POST` body data is required, and if provided it will be ignored.
     + Attributes (Success)
 
 + Response 403 (application/json)
-    + Attributes (Error 403)
+    
 
 ### Revoking a Form Role Assignment from an Actor [DELETE /v1/projects/{projectId}/forms/{xmlFormId}/assignments/{roleId}/{actorId}]
 
@@ -1713,6 +1752,68 @@ Given a `roleId`, which may be a numeric ID or a string role `system` name, and 
 + Parameters
     + roleId: `manager` (string, required) - Typically the integer ID of the `Role`. You may also supply the Role `system` name if it has one.
     + actorId: `14` (number, required) - The integer ID of the `Actor`.
+
++ Response 200 (application/json)
+    + Attributes (Success)
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
+## › Public Access Links [/v1/projects/{projectId}/forms/{xmlFormId}/public-links]
+
+_(introduced: version 1.0)_
+
+Anybody in possession of a Public Access Link for a Form can use that link to submit data to that Form. Public Links are useful for collecting direct responses from a broad set of respondents, and can be revoked using the administration website or the API at any time.
+
+The API for Public Links is particularly useful, as it can be used to, for example, programmatically create and send individually customized and controlled links for direct distribution. The user-facing link for a Public Link has the following structure: `/-/{enketoId}?st={token}` where `-` is the Enketo root, `enketoId` is the survey ID of this published Form on Enketo and `token` is a session token to identify this Public Link.
+
+To revoke the access of any Link, terminate its session `token` by issuing [`DELETE /sessions/:token`](/reference/authentication/session-authentication/logging-out).
+
++ Parameters
+    + projectId: `2` (number, required) - The numeric ID of the Project
+    + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
+
+### Listing all Links [GET]
+
+This will list every Public Access Link upon this Form.
+
+This endpoint supports retrieving extended metadata; provide a header `X-Extended-Metadata: true` to retrieve the Actor the Link was `createdBy`.
+
++ Response 200 (application/json)
+    This is the standard response, if Extended Metadata is not requested:
+
+    + Attributes (array[Public Link])
+
++ Response 200 (application/json; extended)
+    This is the Extended Metadata response, if requested via the appropriate header:
+
+    + Attributes (array[Extended Public Link])
+
+### Creating a Link [POST]
+
+To create a new Public Access Link to this Form, you must send at least a `displayName` for the resulting Actor. You may also provide `once: true` if you want to create a link that [can only be filled by each respondent once](https://blog.enketo.org/single-submission-surveys/). This setting is enforced by Enketo using local device tracking; the link is still distributable to multiple recipients, and the enforcement can be defeated by using multiple browsers or devices.
+
++ Request (application/json)
+    + Attributes
+        + displayName: `my public link` (string, required) - The name of the Link, for keeping track of. This name is displayed on the Central administration website but not to survey respondents.
+        + once: `false` (boolean, optional) - If set to `true`, an Enketo [single submission survey](https://blog.enketo.org/single-submission-surveys/) will be created instead of a standard one, limiting respondents to a single submission each.
+
+    + Body
+
+            { "displayName": "my public link", "once": false }
+
++ Response 200 (application/json)
+    + Attributes (Public Link)
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
+### Deleting a Link [DELETE /v1/projects/{projectId}/forms/{xmlFormId}/public-links/{linkId}]
+
+You can fully delete a link by issuing `DELETE` to its resource. This will remove the Link from the system entirely. If instead you wish to revoke the Link's access to prevent future submission without removing its record entirely, you can issue [`DELETE /sessions/:token`](/reference/authentication/session-authentication/logging-out).
+
++ Parameters
+    + linkId: `42` (integer, required) - The numeric ID of the Link
 
 + Response 200 (application/json)
     + Attributes (Success)
@@ -1749,9 +1850,11 @@ This endpoint supports retrieving extended metadata; provide a header `X-Extende
 + Response 403 (application/json)
     + Attributes (Error 403)
 
-### Exporting Form Submissions to CSV [GET /v1/projects/{projectId}/forms/{xmlFormId}/submissions.csv.zip]
+### Exporting Form Submissions to CSV [GET /v1/projects/{projectId}/forms/{xmlFormId}/submissions.csv.zip{?media,%24filter}]
 
 To export all the `Submission` data associated with a `Form`, just add `.csv.zip` to the end of the listing URL. The response will be a ZIP file containing one or more CSV files, as well as all multimedia attachments associated with the included Submissions.
+
+You can exclude the media attachments from the ZIP file by specifying `?media=false`.
 
 If [Project Managed Encryption](/reference/encryption) is being used, additional querystring parameters may be provided in the format `{keyId}={passphrase}` for any number of keys (eg `1=secret&4=password`). This will decrypt any records encrypted under those managed keys. Submissions encrypted under self-supplied keys will not be decrypted. **Note**: if you are building a browser-based application, please consider the alternative `POST` endpoint, described in the following section.
 
@@ -1759,8 +1862,12 @@ If a passphrase is supplied but is incorrect, the entire request will fail. If a
 
 If you are running an unsecured (`HTTP` rather than `HTTPS`) Central server, it is not a good idea to export data this way as your passphrase and the decrypted data will be sent plaintext over the network.
 
+You can use an [OData-style `$filter` query](/reference/odata-endpoints/odata-form-service/data-document) to filter the submissions that will appear in the ZIP file. This is a bit awkward, since this endpoint has nothing to do with OData, but since we already must recognize the OData syntax, it is less strange overall for now not to invent a whole other one here. Only a subset of the `$filter` features are available; please see the linked section for more information.
+
 + Parameters
     + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
+    + media: `true` (boolean, optional) - Set to false to exclude media attachments from the export.
+    + `%24filter`: `year(__system/submissionDate) lt year(now())` (string, optional) - If provided, will filter responses to those matching the given OData query. Only the fields `__system/submitterId` and `__system/submissionDate` are available to reference. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported, and the built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second`.
 
 + Response 200
     + Headers
@@ -1777,14 +1884,18 @@ If you are running an unsecured (`HTTP` rather than `HTTPS`) Central server, it 
 + Response 403 (application/json)
     + Attributes (Error 403)
 
-### Exporting Form Submissions to CSV via POST [POST /v1/projects/{projectId}/forms/{xmlFormId}/submissions.csv.zip]
+### Exporting Form Submissions to CSV via POST [POST /v1/projects/{projectId}/forms/{xmlFormId}/submissions.csv.zip{?media,%24filter}]
 
 This non-REST-compliant endpoint is provided for use with [Project Managed Encryption](/reference/encryption). In every respect, it behaves identically to the `GET` endpoint described in the previous section, except that it works over `POST`. This is necessary because for browser-based applications, it is a dangerous idea to simply link the user to `/submissions.csv.zip?2=supersecretpassphrase` because the browser will remember this route in its history and thus the passphrase will become exposed. This is especially dangerous as there are techniques for quickly learning browser-visited URLs of any arbitrary domain.
+
+You can exclude the media attachments from the ZIP file by specifying `?media=false`.
 
 And so, for this `POST` version of the Submission CSV export endpoint, the passphrases may be provided via `POST` body rather than querystring. Two formats are supported: form URL encoding (`application/x-www-form-urlencoded`) and JSON. In either case, the keys should be the `keyId`s and the values should be the `passphrase`s, as with the `GET` version above.
 
 + Parameters
     + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
+    + media: `true` (boolean, optional) - Set to false to exclude media attachments from the export.
+    + `%24filter`: `year(__system/submissionDate) lt year(now())` (string, optional) - If provided, will filter responses to those matching the given OData query. Only the fields `__system/submitterId` and `__system/submissionDate` are available to reference. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported, and the built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second`.
 
 + Response 200
     + Headers
@@ -1794,6 +1905,56 @@ And so, for this `POST` version of the Submission CSV export endpoint, the passp
     + Body
 
             (binary data)
+
++ Response 400 (application/json)
+    + Attributes (Error 400)
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
+### Exporting Root Data to Plain CSV [GET /v1/projects/{projectId}/forms/{xmlFormId}/submissions.csv{?%24filter}]
+
+_(introduced: version 1.1)_
+
+The above submission endpoints will give you a ZIP file with the submission data in it. This is necessary to provide all the possible related repeat table files, as well as the media files associated with the submissions. But ZIP files can be difficult to work with, and many Forms have no repeats nor media attachments.
+
+To export _just_ the root table (no repeat data nor media files), you can call this endpoint instead, which will directly give you CSV data.
+
+Please see the [above endpoint](/reference/forms-and-submissions/submissions/exporting-form-submissions-to-csv) for notes on dealing with Managed Encryption.
+
++ Parameters
+    + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
+    + `%24filter`: `year(__system/submissionDate) lt year(now())` (string, optional) - If provided, will filter responses to those matching the given OData query. Only the fields `__system/submitterId` and `__system/submissionDate` are available to reference. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported, and the built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second`.
+
++ Response 200
+    + Body
+
+            (csv text)
+
++ Response 400 (application/json)
+    + Attributes (Error 400)
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
+### Exporting Root Data to Plain CSV via POST [POST /v1/projects/{projectId}/forms/{xmlFormId}/submissions.csv{?%24filter}]
+
+_(introduced: version 1.1)_
+
+This endpoint is useful only for Forms under Project Managed Encryption.
+
+As with `GET` to `.csv` just above, this endpoint will only return CSV text data, rather than a ZIP file containing ore or more files. Please see that endpoint for further explanation.
+
+As with [`POST` to `.csv.zip`](/reference/forms-and-submissions/submissions/exporting-form-submissions-to-csv-via-post) it allows secure submission of decryption passkeys. Please see that endpoint for more information on how to do this.
+
++ Parameters
+    + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
+    + `%24filter`: `year(__system/submissionDate) lt year(now())` (string, optional) - If provided, will filter responses to those matching the given OData query. Only the fields `__system/submitterId` and `__system/submissionDate` are available to reference. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported, and the built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second`.
+
++ Response 200
+    + Body
+
+            (csv data)
 
 + Response 400 (application/json)
     + Attributes (Error 400)
@@ -1810,6 +1971,19 @@ This endpoint provides a listing of all known encryption keys needed to decrypt 
 
 + Response 200
     + Attributes (array[Key])
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
+### Listing Submitters [GET /v1/projects/{projectId}/forms/{xmlFormId}/submissions/submitters]
+
+This endpoint provides a listing of all known submitting actors to a given Form. Each Actor that has submitted to the given Form will be returned once.
+
++ Parameters
+    + xmlFormId: `simple` (string, required) - The `xmlFormId` of the Form being referenced.
+
++ Response 200
+    + Attributes (array[Actor])
 
 + Response 403 (application/json)
     + Attributes (Error 403)
@@ -2248,7 +2422,7 @@ By default, the given `<name/>` in the Form Listing response is the friendly nam
 
 A `<manifestUrl/>` property will be given per `<xform>` if and only if that form is expected to have media or data file attachments associated with it, based on its XForms definition. It will appear even if no attachments have actually been uploaded to the server to fulfill those expectations.
 
-This resource will always return a successful valid result for a Project that exists. The results will be filtered by the Forms that the requesting user is allowed to see.
+This resource always requires authentication. If a valid Actor is authenticated at all, a form list will always be returned, filtered by what that Actor is allowed to access.
 
 If you haven't already, please take a look at the **HTTP Request API** notes above on the required OpenRosa headers.
 
@@ -2294,7 +2468,7 @@ Some additional things to understand when using this API:
 
 * ODK Central will always provide an `X-OpenRosa-Accept-Content-Length` of 100 megabytes. In reality, this number depends on how the server has been deployed. The default Docker-based installation, for example, is limited to 100MB at the nginx layer.
 * The `xml_submission_file` may have a Content Type of either `text/xml` _or_ `application/xml`.
-* Central supports the `HEAD` request preflighting recommended by the specification, but does not require it. Because our supported authentication methods do not follow the try/retry pattern, only preflight your request if you are concerned about the other issues listed in the standards document, like proxies.
+* Central supports the `HEAD` request preflighting recommended by the specification, but does not require it. Because our supported authentication methods do not follow the try/retry pattern, only preflight your request if you want to read the `X-OpenRosa-Accept-Content-Length` header or are concerned about the other issues listed in the standards document, like proxies.
 * As stated in the standards document, it is possible to submit multimedia attachments with the `Submission` across multiple `POST` requests to this API. _However_, we impose the additional restriction that the Submission XML (`xml_submission_file`) _may not change_ between requests. If Central sees a Submission with an `instanceId` it already knows about but the XML has changed in any way, it will respond with a `409 Conflict` error and reject the submission.
 * Central will never return a `202` in any response from this API.
 * If you haven't already, please take a look at the **HTTP Request API** notes above on the required OpenRosa headers.
@@ -2645,6 +2819,8 @@ If you are writing a tool to analyze your own data, whose schema you already kno
 
 In general, the way we model the XForms schema in OData terms is to represent `group`s as `ComplexType`s, and `repeat`s as `EntityType`s. In the world of OData, the primary difference between these two types is that Entity Types require Primary Keys, while Complex Types do not. This fits well with the way XForms surveys tend to be structured.
 
+Most other types map to `String`. The exceptions are numbers, which map either to `Int64` or `Decimal` as appropriate, datetime fields which are always `DateTimeOffset`, and geography points which will appear as `GeographyPoint`, `GeographyLineString`, or `GeographyPolygon` given a `geopoint`, `geotrace`, or `geoshape`.
+
 Due to a limitation in Power BI, we do not take the extra step of advertising the actual relationships between tables (the point at which a `repeat` connects the parent data to the repeated subtable). Normally, this would be done with a `NavigationProperty`. However, while the OData specification allows Navigation Properties to exist on Complex Types, Power BI only allows them on Entity Types, as it makes certain assumptions about how Primary Keys must be structured to relate the two tables together. This is a problem for us, because it is a common idiom in ODK XForms design to place `repeat`s inside of `group`s. When Power BI resolves this issue, we will be able to formally represent the joins between these tables.
 
 This implementation of the OData standard includes a set of Annotations describing the supported features of the service in the form of the [Capabilities Vocabulary](https://github.com/oasis-tcs/odata-vocabularies/blob/master/vocabularies/Org.OData.Capabilities.V1.md). In general, however, you can assume that the server supports the Minimal Conformance level and nothing beyond.
@@ -2718,11 +2894,13 @@ While the latest 4.01 OData specification adds a new JSON EDMX CSDL format, most
 + Response 406 (application/json)
     + Attributes (Error 406)
 
-### Data Document [GET /v1/projects/{projectId}/forms/{xmlFormId}.svc/{table}{?%24skip,%24top,%24count,%24wkt}]
+### Data Document [GET /v1/projects/{projectId}/forms/{xmlFormId}.svc/{table}{?%24skip,%24top,%24count,%24wkt,%24filter}]
 
 The data documents are the straightforward JSON representation of each table of `Submission` data. They follow the [corresponding specification](http://docs.oasis-open.org/odata/odata-json-format/v4.01/odata-json-format-v4.01.html), but apart from the representation of geospatial data as GeoJSON rather than the ODK proprietary format, the output here should not be at all surprising. If you are looking for JSON output of Submission data, this is the best place to look.
 
 The `$top` and `$skip` querystring parameters, specified by OData, apply `limit` and `offset` operations to the data, respectively. The `$count` parameter, also an OData standard, will annotate the response data with the total row count, regardless of the scoping requested by `$top` and `$skip`. While paging is possible through these parameters, it will not greatly improve the performance of exporting data. ODK Central prefers to bulk-export all of its data at once if possible.
+
+As of ODK Central v1.1, the [`$filter` querystring parameter](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#_Toc31358948) is partially supported. In OData, you can use `$filter` to filter by any data field in the schema. In ODK Central, the only fields you can reference are `__system/submitterId` and `__system/submissionDate`. These refer to the numeric `actorId` and the timestamp `createdAt` of the submission overall. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported. The built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second` are supported. These supported elements may be combined in any way, but all other `$filter` features will cause an error. Please see the [OData documentation](http://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#_Toc31358948) on `$filter` for more information.
 
 In this release of Central, `$expand` is not yet supported. This will likely change in the future, once we can instate Navigation Properties.
 
@@ -2737,6 +2915,7 @@ As the vast majority of clients only support the JSON OData format, that is the 
     + `%24top`: `5` (number, optional) - If supplied, only up to `$top` rows will be returned in the results.
     + `%24count`: `true` (boolean, optional) - If set to `true`, an `@odata.count` property will be added to the result indicating the total number of rows, ignoring the above paging parameters.
     + `%24wkt`: `true` (boolean, optional) - If set to `true`, geospatial data will be returned as Well-Known Text (WKT) strings rather than GeoJSON structures.
+    + `%24filter`: `year(__system/submissionDate) lt year(now())` (string, optional) - If provided, will filter responses to those matching the query. Only the fields `__system/submitterId` and `__system/submissionDate` are available to reference. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported, and the built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second`.
 
 + Response 200 (application/json)
     + Body
@@ -2885,7 +3064,7 @@ Identical to [the non-Draft version](/reference/odata-endpoints/odata-form-servi
 + Response 406 (application/json)
     + Attributes (Error 406)
 
-### Data Document [GET /v1/projects/{projectId}/forms/{xmlFormId}/draft.svc/{table}{?%24skip,%24top,%24count,%24wkt}]
+### Data Document [GET /v1/projects/{projectId}/forms/{xmlFormId}/draft.svc/{table}{?%24skip,%24top,%24count,%24wkt,%24filter}]
 
 Identical to [the non-Draft version](/reference/odata-endpoints/odata-form-service/data-document) of this endpoint.
 
@@ -2896,6 +3075,7 @@ Identical to [the non-Draft version](/reference/odata-endpoints/odata-form-servi
     + `%24top`: `5` (number, optional) - If supplied, only up to `$top` rows will be returned in the results.
     + `%24count`: `true` (boolean, optional) - If set to `true`, an `@odata.count` property will be added to the result indicating the total number of rows, ignoring the above paging parameters.
     + `%24wkt`: `true` (boolean, optional) - If set to `true`, geospatial data will be returned as Well-Known Text (WKT) strings rather than GeoJSON structures.
+    + `%24filter`: `year(__system/submissionDate) lt year(now())` (string, optional) - If provided, will filter responses to those matching the query. Only the fields `__system/submitterId` and `__system/submissionDate` are available to reference. The operators `lt`, `lte`, `eq`, `neq`, `gte`, `gt`, `not`, `and`, and `or` are supported, and the built-in functions `now`, `year`, `month`, `day`, `hour`, `minute`, `second`.
 
 + Response 200 (application/json)
     + Body
@@ -3021,6 +3201,54 @@ If these two things are present and correct, and Google can be reached to verify
 + Response 403 (application/json)
     + Attributes (Error 403)
 
+## Direct Backup [/v1/backup]
+
+_(introduced: version 1.1)_
+
+ODK Central offers HTTP endpoints that will immediately perform a backup on the system database and send that encrypted backup as the response. You can `POST` with an encryption passphrase, or `GET` if you have encryption [already configured](/reference/system-endpoints/backups-configuration) to use the passphrase you configured then.
+
+Note that performing the backup takes a great deal of time, during which the request will be held open. Both of these endpoints trickle junk data every five seconds while that processing is occurring to prevent the request from timing out. Depending on how much data you have, it can take many minutes for the data stream to speed up to a full transfer rate.
+
+### Using an Ad-Hoc Passphrase [POST]
+
+A `POST` verb will start an direct download ad-hoc backup. You will want to supply a `passphrase` with your chosen encryption passphrase. It is possible to omit this, in which case the backup will still be encrypted, but it will decrypt given an empty passphrase.
+
+Please see the section notes above about the long-running nature of this endpoint.
+
++ Request (application/json)
+    + Attributes
+        + passphrase: `my-password` (string, optional) - The passphrase with which to encrypt the backup.
+
++ Response 200
+    + Headers
+
+            Content-Disposition: attachment; filename=central-backup-2020-01-01T00:00:00.000Z.zip
+
+    + Body
+
+            (binary data)
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
+### Using the Configured Scheduled Backups Passphrase [GET]
+
+A `GET` verb will start an direct download backup, but using the configured scheduled backups passphrase. If no scheduled backup has been configured, the endpoint will return not found.
+
+Please see the section notes above about the long-running nature of this endpoint.
+
++ Response 200
+    + Headers
+
+            Content-Disposition: attachment; filename=central-backup-2020-01-01T00:00:00.000Z.zip
+
+    + Body
+
+            (binary data)
+
++ Response 403 (application/json)
+    + Attributes (Error 403)
+
 ## Server Audit Logs [/v1/audits]
 
 _(introduced: version 0.6)_
@@ -3133,7 +3361,6 @@ These are in alphabetic order, with the exception that the `Extended` versions o
 + roleId: `4` (number, required) - The numeric Role ID being assigned.
 
 ## App User (Actor)
-+ createdBy: `42` (number, required) - The ID of the `Actor` that created this `App User`.
 + token: `d1!E2GVHgpr4h9bpxxtqUJ7EVJ1Q$Dusm2RBXg8XyVJMCBCbvyE8cGacxUx3bcUT` (string, optional) - If present, this is the Token that can be used to authenticate a request as this `App User`. If not present, this `App User`'s access has been revoked.
 + projectId: `1` (number, required) - The ID of the `Project` that this `App User` is bound to.
 
@@ -3182,6 +3409,7 @@ These are in alphabetic order, with the exception that the `Extended` versions o
 + xmlFormId: `simple` (string, required) - The `id` of this form as given in its XForms XML definition
 + name: `Simple` (string, optional) - The friendly name of this form. It is given by the `<title>` in the XForms XML definition.
 + version: `2.1` (string, optional) - The `version` of this form as given in its XForms XML definition. If no `version` was specified in the Form, a blank string will be given. If there is no associated Form, `null` will be returned.
++ enketoId: `abcdef` (string, optional) - If it exists, this is the survey ID of this published Form on Enketo at `/-`. Only a cookie-authenticated user may access the preview through Enketo.
 + hash: `51a93eab3a1974dbffc4c7913fa5a16a` (string, required) - An MD5 sum automatically computed based on the XForms XML definition. This is required for OpenRosa compliance.
 + keyId: `3` (number, optional) - If a public encryption key is present on the form, its numeric ID as tracked by Central is given here.
 + state (Form State, required) - The present lifecycle status of this form. Controls whether it is available for download on survey clients or accepts new submissions.
@@ -3195,7 +3423,8 @@ These are in alphabetic order, with the exception that the `Extended` versions o
 + excelContentType: (string, optional) - If the Form was created by uploading an Excel file, this field contains the MIME type of that file.
 
 ## Draft Form (Form)
-+ draftToken: `lSpAIeksRu1CNZs7!qjAot2T17dPzkrw9B4iTtpj7OoIJBmXvnHM8z8Ka4QPEjR7` (string, required) - The test token to use to submit to this draft form. See [Draft Testing Endpoints](TODO).
++ draftToken: `lSpAIeksRu1CNZs7!qjAot2T17dPzkrw9B4iTtpj7OoIJBmXvnHM8z8Ka4QPEjR7` (string, required) - The test token to use to submit to this draft form. See [Draft Testing Endpoints](/reference/forms-and-submissions/'-draft-submissions).
++ enketoId: `abcdef` (string, optional) - If it exists, this is the survey ID of this draft Form on Enketo at `/-`. Authentication is not needed to access the draft form through Enketo.
 
 ## Extended Form Version (Form)
 + publishedBy: (Actor, optional) - The full information of the Actor who published this version of the Form.
@@ -3233,6 +3462,13 @@ These are in alphabetic order, with the exception that the `Extended` versions o
 + forms: `7` (number, required) - The number of forms within this Project.
 + lastSubmission: `2018-04-18T03:04:51.695Z` (string, optional) - ISO date format. The timestamp of the most recent submission to any form in this project, if any.
 
+## Public Link (Actor)
++ token: `d1!E2GVHgpr4h9bpxxtqUJ7EVJ1Q$Dusm2RBXg8XyVJMCBCbvyE8cGacxUx3bcUT` (string, optional) - If present, this is the Token to include as the `st` query parameter for this `Public Link`. If not present, this `Public Link` has been revoked.
++ once: `false` (boolean, optional) - If set to `true`, an Enketo [single submission survey](https://blog.enketo.org/single-submission-surveys/) will be created instead of a standard one, limiting respondents to a single submission each.
+
+## Extended Public Link (Public Link)
++ createdBy (Actor, required) - The full details about the `Actor` that created this `App User`.
+
 ## Key (object)
 + id: `1` (number, required) - The numerical ID of the Key.
 + public: `bcFeKDF3Sg8W91Uf5uxaIlM2uK0cUN9tBSGoASbC4LeIPqx65+6zmjbgUnIyiLzIjrx4CAaf9Y9LG7TAu6wKPqfbH6ZAkJTFSfjLNovbKhpOQcmO5VZGGay6yvXrX1TFW6C6RLITy74erxfUAStdtpP4nraCYqQYqn5zD4/1OmgweJt5vzGXW2ch7lrROEQhXB9lK+bjEeWx8TFW/+6ha/oRLnl6a2RBRL6mhwy3PoByNTKndB2MP4TygCJ/Ini4ivk74iSqVnoeuNJR/xUcU+kaIpZEIjxpAS2VECJU9fZvS5Gt84e5wl/t7bUKu+dlh/cUgHfk6+6bwzqGQYOe5A==` (string, required) - The base64-encoded public key, with PEM envelope removed.
@@ -3258,6 +3494,7 @@ These are in alphabetic order, with the exception that the `Extended` versions o
 ## Submission (object)
 + instanceId: `uuid:85cb9aff-005e-4edd-9739-dc9c1a829c44` (string, required) - The `instanceId` of the `Submission`, given by the Submission XML.
 + submitterId: `23` (number, required) - The ID of the `Actor` (`App User` or `User`) that submitted this `Submission`.
++ deviceId: `imei:123456` (string, optional) - The self-identified `deviceId` of the device that collected the data, sent by it upon submission to the server.
 + createdAt: `2018-01-19T23:58:03.395Z` (string, required) - ISO date format
 + updatedAt: `2018-03-21T12:45:02.312Z` (string, optional) - ISO date format
 

@@ -56,20 +56,64 @@ describe('middleware', () => {
       });
     });
 
-    it('should set None and leave the URL if the key is invalid', (done) => {
-      const request = createRequest({ url: '/key/12345/users/23' });
+    it('should pass through any field key content', (done) => {
+      const request = createRequest({ url: '/key/12|45/users/23' });
       fieldKeyParser(request, null, () => {
-        request.fieldKey.should.equal(Option.none());
-        request.url.should.equal('/key/12345/users/23');
+        request.fieldKey.should.eql(Option.of('12|45'));
+        request.url.should.equal('/users/23');
         done();
       });
     });
 
-    it('should set Some(fk) and rewrite URL if a key is found', (done) => {
+    it('should set Some(fk) and rewrite URL if a prefix key is found', (done) => {
       const request = createRequest({ url: '/key/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/users/23' });
       fieldKeyParser(request, null, () => {
         request.fieldKey.should.eql(Option.of('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
         request.url.should.equal('/users/23');
+        done();
+      });
+    });
+
+    it('should decode percent-encoded prefix keys', (done) => {
+      const request = createRequest({ url: '/key/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%24aa!aaaaaaaaaaaaaaaaaa/users/23' });
+      fieldKeyParser(request, null, () => {
+        request.fieldKey.should.eql(Option.of('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$aa!aaaaaaaaaaaaaaaaaa'));
+        request.url.should.equal('/users/23');
+        done();
+      });
+    });
+
+    it('should pass through any query key content', (done) => {
+      const request = createRequest({ url: '/v1/users/23?st=inva|id' });
+      fieldKeyParser(request, null, () => {
+        request.fieldKey.should.eql(Option.of('inva|id'));
+        request.originalUrl.should.equal('/v1/key/inva|id/users/23?st=inva|id');
+        done();
+      });
+    });
+
+    it('should escape slashes in the rewritten path prefix', (done) => {
+      const request = createRequest({ url: '/v1/users/23?st=in$va/i/d' });
+      fieldKeyParser(request, null, () => {
+        request.fieldKey.should.eql(Option.of('in$va/i/d'));
+        request.originalUrl.should.equal('/v1/key/in$va%2Fi%2Fd/users/23?st=in$va/i/d');
+        done();
+      });
+    });
+
+    it('should set Some(fk) and rewrite URL if a query key is found', (done) => {
+      const request = createRequest({ url: '/v1/users/23?st=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+      fieldKeyParser(request, null, () => {
+        request.fieldKey.should.eql(Option.of('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
+        request.originalUrl.should.equal('/v1/key/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/users/23?st=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+        done();
+      });
+    });
+
+    it('should decode percent-encoded query keys', (done) => {
+      const request = createRequest({ url: '/v1/users/23?st=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%24aa!aaaaaaaaaaaaaaaaaa' });
+      fieldKeyParser(request, null, () => {
+        request.fieldKey.should.eql(Option.of('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$aa!aaaaaaaaaaaaaaaaaa'));
         done();
       });
     });
