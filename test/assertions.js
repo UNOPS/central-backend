@@ -55,6 +55,15 @@ should.Assertion.add('Actor', function() {
   should.not.exist(this.obj.meta);
 });
 
+should.Assertion.add('Comment', function() {
+  this.params = { operator: 'to be a Comment' };
+
+  Object.keys(this.obj).should.containDeep([ 'body', 'actorId', 'createdAt' ]);
+  this.obj.body.should.be.a.String();
+  this.obj.actorId.should.be.a.Number();
+  this.obj.createdAt.should.be.an.isoDate();
+});
+
 should.Assertion.add('User', function() {
   this.params = { operator: 'to be a User' };
 
@@ -81,6 +90,22 @@ should.Assertion.add('ExtendedSubmission', function() {
   this.obj.submitter.should.be.an.Actor();
   this.obj.createdAt.should.be.an.isoDate();
   if (this.obj.updatedAt != null) this.obj.updatedAt.should.be.an.isoDate();
+});
+
+should.Assertion.add('SubmissionDef', function() {
+  this.params = { operator: 'to be a Submission' };
+
+  Object.keys(this.obj).should.containDeep([ 'submitterId', 'createdAt', 'instanceName' ]);
+  this.obj.submitterId.should.be.a.Number();
+  this.obj.createdAt.should.be.an.isoDate();
+  if (this.obj.instanceName != null) this.obj.instanceName.should.be.a.String();
+});
+
+should.Assertion.add('ExtendedSubmissionDef', function() {
+  this.params = { operator: 'to be a Submission' };
+
+  this.obj.should.be.a.SubmissionDef();
+  this.obj.submitter.should.be.an.Actor();
 });
 
 should.Assertion.add('Session', function() {
@@ -198,6 +223,8 @@ should.Assertion.add('Audit', function() {
   should.not.exist(this.obj.processed);
   should.not.exist(this.obj.lastFailure);
   should.not.exist(this.obj.failures);
+
+  if (this.obj.notes != null) this.obj.notes.should.be.a.String();
 });
 
 should.Assertion.add('Key', function() {
@@ -211,7 +238,7 @@ should.Assertion.add('SimpleCsv', function() {
 
   const csv = this.obj.split('\n').map((row) => row.split(','));
   csv.length.should.equal(5); // header + 3 data rows + newline
-  csv[0].should.eql([ 'SubmissionDate', 'meta-instanceID', 'name', 'age', 'KEY', 'SubmitterID', 'SubmitterName', 'AttachmentsPresent', 'AttachmentsExpected', 'Status' ]);
+  csv[0].should.eql([ 'SubmissionDate', 'meta-instanceID', 'name', 'age', 'KEY', 'SubmitterID', 'SubmitterName', 'AttachmentsPresent', 'AttachmentsExpected', 'Status', 'ReviewState', 'DeviceID', 'Edits' ]);
   csv[1].shift().should.be.an.recentIsoDate();
   csv[1].should.eql([ 'three','Chelsea','38','three','5','Alice','0','0' ]);
   csv[2].shift().should.be.an.recentIsoDate();
@@ -226,7 +253,7 @@ should.Assertion.add('EncryptedSimpleCsv', function() {
 
   const csv = this.obj.split('\n').map((row) => row.split(','));
   csv.length.should.equal(5); // header + 3 data rows + newline
-  csv[0].should.eql([ 'SubmissionDate', 'meta-instanceID', 'name', 'age', 'KEY', 'SubmitterID', 'SubmitterName', 'AttachmentsPresent', 'AttachmentsExpected', 'Status' ]);
+  csv[0].should.eql([ 'SubmissionDate', 'meta-instanceID', 'name', 'age', 'KEY', 'SubmitterID', 'SubmitterName', 'AttachmentsPresent', 'AttachmentsExpected', 'Status', 'ReviewState', 'DeviceID', 'Edits' ]);
   csv[1].shift().should.be.an.recentIsoDate();
   csv[1].should.eql([ 'three','Chelsea','38','three','5','Alice','1','1' ]);
   csv[2].shift().should.be.an.recentIsoDate();

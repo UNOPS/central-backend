@@ -1,5 +1,6 @@
 const appRoot = require('app-root-path');
 const should = require('should');
+const { sql } = require('slonik');
 const { testService } = require('../setup');
 const testData = require('../../data/xml');
 const { QueryOptions } = require('../../../lib/util/db');
@@ -197,25 +198,22 @@ describe('api: /projects', () => {
             return asAlice.get(`/v1/projects/${body.id}`).expect(200);
           }))));
 
-    it('should create an audit log entry', testService((service, { Audit, Project, simply }) =>
+    it('should create an audit log entry', testService((service, { Audits, Projects, one }) =>
       service.login('alice', (asAlice) =>
         asAlice.post('/v1/projects')
           .set('Content-Type', 'application/json')
           .send({ name: 'Test Project' })
           .expect(200)
           .then(({ body }) => Promise.all([
-            Audit.getLatestWhere({ action: 'project.create' }),
+            Audits.getLatestByAction('project.create'),
             asAlice.get('/v1/users/current')
           ])
             .then(([ audit, user ]) => {
               audit.isDefined().should.equal(true);
               audit.get().actorId.should.equal(user.body.id);
-              audit.get().details.should.eql({ data: { name: 'Test Project' } });
-              return simply.getOneWhere('projects', { acteeId: audit.get().acteeId }, Project)
-                .then((project) => {
-                  project.isDefined().should.equal(true);
-                  project.get().id.should.equal(body.id);
-                });
+              audit.get().details.data.name.should.equal('Test Project');
+              return one(sql`select * from projects where "acteeId"=${audit.get().acteeId}`)
+                .then((project) => { project.id.should.equal(body.id); });
             })))));
   });
 
@@ -367,7 +365,7 @@ describe('api: /projects', () => {
               body.archived.should.equal(true);
             })))));
 
-    it('should log the action in the audit log', testService((service, { Audit, Project }) =>
+    it('should log the action in the audit log', testService((service, { Audits, Projects }) =>
       service.login('alice', (asAlice) =>
         asAlice.patch('/v1/projects/1')
           .set('Content-Type', 'application/json')
@@ -375,8 +373,8 @@ describe('api: /projects', () => {
           .expect(200)
           .then(() => Promise.all([
             asAlice.get('/v1/users/current').expect(200),
-            Project.getById(1),
-            Audit.getLatestWhere({ action: 'project.update' })
+            Projects.getById(1),
+            Audits.getLatestByAction('project.update')
           ]))
           .then(([ user, project, audit ]) => {
             project.isDefined().should.equal(true);
@@ -533,20 +531,20 @@ describe('api: /projects', () => {
               text.should.match(/<submission base64RsaPublicKey="[a-zA-Z0-9+/]{392}"\/>/);
             })))));
 
-    it('should log the action in the audit log', testService((service, { Audit, Project, User }) =>
+    it('should log the action in the audit log', testService((service, { Audits, Projects, Users }) =>
       service.login('alice', (asAlice) =>
         asAlice.post('/v1/projects/1/key')
           .send({ passphrase: 'supersecret', hint: 'it is a secret' })
           .expect(200)
           .then(() => Promise.all([
-            Project.getById(1).then((o) => o.get()),
-            User.getByEmail('alice@opendatakit.org').then((o) => o.get()),
-            Audit.getLatestWhere({ action: 'project.update' }).then((o) => o.get())
+            Projects.getById(1).then((o) => o.get()),
+            Users.getByEmail('alice@opendatakit.org').then((o) => o.get()),
+            Audits.getLatestByAction('project.update').then((o) => o.get())
           ]))
           .then(([ project, alice, log ]) => {
             log.actorId.should.equal(alice.actor.id);
             log.acteeId.should.equal(project.acteeId);
-            log.details.should.eql({ encrypted: true });
+            log.details.should.eql({ data: { keyId: project.keyId } });
           }))));
   });
 
@@ -608,7 +606,7 @@ describe('api: /projects', () => {
             body.updatedAt.should.be.a.recentIsoDate();
           }))));
 
-    it('should log the action in the audit log', testService((service, { Audit, Project }) =>
+    it('should log the action in the audit log', testService((service, { Audits, Projects }) =>
       service.login('alice', (asAlice) =>
         asAlice.put('/v1/projects/1')
           .set('Content-Type', 'application/json')
@@ -616,8 +614,8 @@ describe('api: /projects', () => {
           .expect(200)
           .then(() => Promise.all([
             asAlice.get('/v1/users/current').expect(200),
-            Project.getById(1),
-            Audit.getLatestWhere({ action: 'project.update' })
+            Projects.getById(1),
+            Audits.getLatestByAction('project.update')
           ]))
           .then(([ user, project, audit ]) => {
             project.isDefined().should.equal(true);
@@ -681,8 +679,8 @@ describe('api: /projects', () => {
           .send({
             name: 'Default Project',
             forms: [
-              { xmlFormId: 'simple', name: 'New Simple', state: 'closed' },
-              { xmlFormId: 'withrepeat', name: 'New Repeat', state: 'closing' }
+              { xmlFormId: 'simple', state: 'closed' },
+              { xmlFormId: 'withrepeat', state: 'closing' }
             ]
           })
           .expect(200)
@@ -691,45 +689,54 @@ describe('api: /projects', () => {
             .then(({ body }) => {
               body.length.should.equal(2);
               body[0].should.be.a.Form();
-              body[0].xmlFormId.should.equal('withrepeat');
-              body[0].name.should.equal('New Repeat');
-              body[0].state.should.equal('closing');
+              body[0].xmlFormId.should.equal('simple');
+              body[0].state.should.equal('closed');
               body[1].should.be.a.Form();
-              body[1].xmlFormId.should.equal('simple');
-              body[1].name.should.equal('New Simple');
-              body[1].state.should.equal('closed');
+              body[1].xmlFormId.should.equal('withrepeat');
+              body[1].state.should.equal('closing');
             })))));
 
-    it('should log the action in the audit log', testService((service, { Audit, Project }) =>
+    it('should not allow changing non-writable form details', testService((service) =>
+      service.login('bob', (asBob) =>
+        asBob.put('/v1/projects/1')
+          .send({
+            name: 'Default Project',
+            forms: [
+              { xmlFormId: 'simple', name: 'New Simple', state: 'closed' },
+            ]
+          })
+          .expect(501)))); // 501 not implemented
+
+    it('should log the action in the audit log', testService((service, { Audits, Forms, Projects }) =>
       service.login('bob', (asBob) =>
         asBob.put('/v1/projects/1')
           .set('Content-Type', 'application/json')
           .send({
             name: 'Default Project',
             forms: [
-              { xmlFormId: 'simple', name: 'New Simple', state: 'closed' },
-              { xmlFormId: 'withrepeat', name: 'New Repeat', state: 'closing' }
+              { xmlFormId: 'simple', state: 'closed' },
+              { xmlFormId: 'withrepeat', state: 'closing' }
             ]
           })
           .expect(200)
           .then(() => Promise.all([
             asBob.get('/v1/users/current').expect(200).then(({ body }) => body),
-            Project.getById(1).then((o) => o.get())
-              .then((project) => project.getAllForms()),
-            Audit.get(new QueryOptions({ args: { action: 'form.update' } }))
+            Projects.getById(1).then((o) => o.get())
+              .then((project) => Forms.getByProjectId(project.id)),
+            Audits.get(new QueryOptions({ args: { action: 'form.update' } }))
           ]))
           .then(([ bob, forms, audits ]) => {
             audits.length.should.equal(2);
 
-            const repeatAudit = audits.find((a) => a.acteeId === forms[0].acteeId);
-            should.exist(repeatAudit);
-            repeatAudit.actorId.should.equal(bob.id);
-            repeatAudit.details.should.eql({ data: { name: 'New Repeat', state: 'closing' } });
-
-            const simpleAudit = audits.find((a) => a.acteeId === forms[1].acteeId);
+            const simpleAudit = audits.find((a) => a.acteeId === forms[0].acteeId);
             should.exist(simpleAudit);
             simpleAudit.actorId.should.equal(bob.id);
-            simpleAudit.details.should.eql({ data: { name: 'New Simple', state: 'closed' } });
+            simpleAudit.details.should.eql({ data: { state: 'closed' } });
+
+            const repeatAudit = audits.find((a) => a.acteeId === forms[1].acteeId);
+            should.exist(repeatAudit);
+            repeatAudit.actorId.should.equal(bob.id);
+            repeatAudit.details.should.eql({ data: { state: 'closing' } });
           }))));
 
     ////////////////////////////////////////////////////////////////////////////////
@@ -888,7 +895,7 @@ describe('api: /projects', () => {
                 .then(({ body }) => { body.should.eql([{ roleId: managerRoleId, actorId: fk.id }]); })
             ]))))));
 
-    it('should log the creation action in the audit log', testService((service, { Actor, Audit, Form }) =>
+    it('should log the creation action in the audit log', testService((service, { Actors, Audits, Forms }) =>
       service.login('bob', (asBob) =>
         Promise.all([
           asBob.post('/v1/projects/1/app-users')
@@ -916,9 +923,9 @@ describe('api: /projects', () => {
             .expect(200)
             .then(() => Promise.all([
               asBob.get('/v1/users/current').expect(200).then(({ body }) => body),
-              Actor.getById(fk.id).then((o) => o.get()),
-              Form.getByProjectAndXmlFormId(1, 'simple').then((o) => o.get()),
-              Audit.getLatestByAction('assignment.create').then((o) => o.get())
+              Actors.getById(fk.id).then((o) => o.get()),
+              Forms.getByProjectAndXmlFormId(1, 'simple').then((o) => o.get()),
+              Audits.getLatestByAction('field_key.assignment.create').then((o) => o.get())
             ]))
             .then(([ bob, fullfk, form, audit ]) => {
               audit.actorId.should.equal(bob.id);
@@ -995,9 +1002,9 @@ describe('api: /projects', () => {
               asBob.get('/v1/projects/1/forms/simple/assignments')
                 .expect(200)
                 .then(({ body }) => { body.should.eql([]); }),
-              container.Form.getByProjectAndXmlFormId(1, 'simple2')
+              container.Forms.getByProjectAndXmlFormId(1, 'simple2')
                 .then((o) => o.get())
-                .then(({ acteeId }) => container.Assignment.getByActeeId(acteeId))
+                .then(({ acteeId }) => container.Assignments.getByActeeId(acteeId))
                 .then((result) => {
                   result.length.should.equal(1);
                 }),
@@ -1034,7 +1041,7 @@ describe('api: /projects', () => {
               .then(({ body }) => { body.should.eql([]); })
           ]))))));
 
-    it('should log the deletion action in the audit log', testService((service, { Actor, Audit, Project }) =>
+    it('should log the deletion action in the audit log', testService((service, { Actors, Audits, Forms, Projects }) =>
       service.login('bob', (asBob) => asBob.post('/v1/projects/1/app-users')
         .send({ displayName: 'test app user' })
         .expect(200)
@@ -1056,10 +1063,10 @@ describe('api: /projects', () => {
             .then(() => Promise.all([
               asBob.get('/v1/users/current').expect(200).then(({ body }) => body),
               asBob.get('/v1/roles/app-user').expect(200).then(({ body }) => body.id),
-              Actor.getById(fk.id).then((o) => o.get()),
-              Project.getById(1).then((o) => o.get())
-                .then((project) => project.getFormByXmlFormId('simple')).then((o) => o.get()),
-              Audit.getLatestByAction('assignment.delete').then((o) => o.get())
+              Actors.getById(fk.id).then((o) => o.get()),
+              Projects.getById(1).then((o) => o.get())
+                .then((project) => Forms.getByProjectAndXmlFormId(project.id,  'simple')).then((o) => o.get()),
+              Audits.getLatestByAction('field_key.assignment.delete').then((o) => o.get())
             ]))
             .then(([ bob, appUserRoleId, fullfk, form, audit ]) => {
               audit.actorId.should.equal(bob.id);
@@ -1092,7 +1099,7 @@ describe('api: /projects', () => {
                 body[0].actorId.should.equal(fk.id);
               })))))));
 
-    it('should leave assignments alone if there is no change', testService((service, { Audit }) =>
+    it('should leave assignments alone if there is no change', testService((service, { Audits }) =>
       service.login('bob', (asBob) => Promise.all([
         asBob.post('/v1/projects/1/app-users')
           .send({ displayName: 'test app user' })
@@ -1121,7 +1128,7 @@ describe('api: /projects', () => {
                   body.length.should.equal(1);
                   body[0].actorId.should.equal(fk.id);
                 }),
-              Audit.getLatestByAction('assignment.delete')
+              Audits.getLatestByAction('assignment.delete')
                 .then((o) => { o.isDefined().should.equal(false); })
             ])))))));
   });

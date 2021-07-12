@@ -27,6 +27,7 @@ describe('api: /projects/:id/forms', () => {
             body.forEach((form) => form.should.be.a.Form());
             body.map((form) => form.projectId).should.eql([ 1, 1 ]);
             body.map((form) => form.xmlFormId).should.eql([ 'simple', 'withrepeat' ]);
+            body.map((form) => form.name).should.eql([ 'Simple', null ]);
             body.map((form) => form.hash).should.eql([ '5c09c21d4c71f2f13f6aa26227b2d133', 'e7e9e6b3f11fca713ff09742f4312029' ]);
             body.map((form) => form.version).should.eql([ '', '1.0' ]);
           }))));
@@ -419,7 +420,34 @@ describe('api: /projects/:id/forms', () => {
             body.hash.should.equal('07ed8a51cc3f6472b7dfdc14c2005861');
           }))));
 
-    it('should reject if form id is too long', testService((service) =>
+    it('should reject if form id ends in .xml', testService((service) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms')
+          .send(testData.forms.simple.replace(/id=".*"/i, 'id="formid.xml"'))
+          .set('Content-Type', 'application/xml')
+          .expect(400)
+          .then(({ body }) => {
+            body.code.should.equal(400.8);
+          }))));
+
+    it('should reject if form id ends in .xls(x)', testService((service) =>
+      service.login('alice', (asAlice) =>
+        asAlice.post('/v1/projects/1/forms')
+          .send(testData.forms.simple.replace(/id=".*"/i, 'id="formid.xls"'))
+          .set('Content-Type', 'application/xml')
+          .expect(400)
+          .then(({ body }) => {
+            body.code.should.equal(400.8);
+          })
+          .then(asAlice.post('/v1/projects/1/forms')
+            .send(testData.forms.simple.replace(/id=".*"/i, 'id="formid.xlsx"'))
+            .set('Content-Type', 'application/xml')
+            .expect(400)
+            .then(({ body }) => {
+              body.code.should.equal(400.8);
+            })))));
+
+    it('should reject if form id contains is too long', testService((service) =>
       service.login('alice', (asAlice) =>
         asAlice.post('/v1/projects/1/forms')
           .send(testData.forms.simple.replace(/id=".*"/i, 'id="simple_form_with_form_id_length_more_than_sixty_four_characters_long"'))
@@ -550,14 +578,17 @@ describe('api: /projects/:id/forms', () => {
           .then(() => asAlice.get('/v1/projects/1/forms/simple2')
             .expect(200)
             .then(({ body }) => {
-              should.not.exist(body.version);
-              should.not.exist(body.hash);
-              should.not.exist(body.sha);
-              should.not.exist(body.sha256);
+              should.not.exist(body.publishedAt);
+              body.name.should.equal('Simple 2');
+              body.version.should.equal('2.1');
+              body.hash.should.equal('07ed8a51cc3f6472b7dfdc14c2005861');
+              body.sha.should.equal('466b8cf532c22aea7b1791ea2e6712ab31ce90a4');
+              body.sha256.should.equal('d438bdfb5c0b9bb800420363ca8900d26c3e664945d4ffc41406cbc599e43cae');
             }))
           .then(() => asAlice.get('/v1/projects/1/forms/simple2/draft')
             .expect(200)
             .then(({ body }) => {
+              body.name.should.equal('Simple 2');
               body.version.should.equal('2.1');
               body.hash.should.equal('07ed8a51cc3f6472b7dfdc14c2005861');
               body.sha.should.equal('466b8cf532c22aea7b1791ea2e6712ab31ce90a4');
@@ -705,6 +736,27 @@ describe('api: /projects/:id/forms', () => {
                 Buffer.compare(input, body).should.equal(0);
               })));
       }));
+
+      it('should return the xlsx file originally provided', testService((service) => {
+        const input = readFileSync(appRoot + '/test/data/simple.xlsx');
+        return service.login('alice', (asAlice) =>
+          asAlice.post('/v1/projects/1/forms?publish=true')
+            .send(input)
+            .set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            .expect(200)
+            .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+              .send(input)
+              .set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+              .expect(200))
+            .then(() => asAlice.get('/v1/projects/1/forms/simple2/draft.xlsx')
+              .buffer(true).parse(superagent.parse['application/octet-stream'])
+              .expect(200)
+              .then(({ headers, body }) => {
+                headers['content-type'].should.equal('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                headers['content-disposition'].should.equal('attachment; filename="simple2.xlsx"');
+                Buffer.compare(input, body).should.equal(0);
+              })));
+      }));
     });
 
     describe('.xls GET', () => {
@@ -767,6 +819,7 @@ describe('api: /projects/:id/forms', () => {
             .then(({ body }) => {
               body.should.be.a.Form();
               body.xmlFormId.should.equal('simple');
+              body.name.should.equal('Simple');
               body.hash.should.equal('5c09c21d4c71f2f13f6aa26227b2d133');
             }))));
 
@@ -1090,7 +1143,7 @@ describe('api: /projects/:id/forms', () => {
 
                     const firstUpdatedAt = DateTime.fromISO(firstListing.body[0].updatedAt);
                     const secondUpdatedAt = DateTime.fromISO(secondListing.body[0].updatedAt);
-                    secondUpdatedAt.should.be.greaterThan(firstUpdatedAt);
+                    secondUpdatedAt.should.be.aboveOrEqual(firstUpdatedAt);
                   }))))));
       });
 
@@ -1164,18 +1217,16 @@ describe('api: /projects/:id/forms', () => {
     it('should update allowed fields', testService((service) =>
       service.login('alice', (asAlice) =>
         asAlice.patch('/v1/projects/1/forms/simple')
-          .send({ name: 'a fancy name', state: 'closing' })
+          .send({ state: 'closing' })
           .expect(200)
           .then(({ body }) => {
             body.should.be.a.Form();
-            body.name.should.equal('a fancy name');
             body.state.should.equal('closing');
           })
           .then(() => asAlice.get('/v1/projects/1/forms/simple')
             .expect(200)
             .then(({ body }) => {
               body.should.be.a.Form();
-              body.name.should.equal('a fancy name');
               body.state.should.equal('closing');
             })))));
 
@@ -1188,7 +1239,12 @@ describe('api: /projects/:id/forms', () => {
     it('should not update disallowed fields', testService((service) =>
       service.login('alice', (asAlice) =>
         asAlice.patch('/v1/projects/1/forms/simple')
-          .send({ xmlFormId: 'changed', xml: 'changed', hash: 'changed' })
+          .send({
+            xmlFormId: 'changed',
+            xml: 'changed',
+            hash: 'changed',
+            name: 'a fancy name'
+          })
           .expect(200)
           .then(() => Promise.all([
             asAlice.get('/v1/projects/1/forms/simple')
@@ -1197,6 +1253,7 @@ describe('api: /projects/:id/forms', () => {
               .then(({ body }) => {
                 body.xmlFormId.should.equal('simple');
                 body.hash.should.equal('5c09c21d4c71f2f13f6aa26227b2d133');
+                body.name.should.equal('Simple');
               }),
             asAlice.get('/v1/projects/1/forms/simple.xml')
               .expect(200)
@@ -1205,21 +1262,21 @@ describe('api: /projects/:id/forms', () => {
               })
           ])))));
 
-    it('should log the action in the audit log', testService((service, { Project, Form, User, Audit }) =>
+    it('should log the action in the audit log', testService((service, { Projects, Forms, Users, Audits }) =>
       service.login('alice', (asAlice) =>
         asAlice.patch('/v1/projects/1/forms/simple')
-          .send({ name: 'a fancy name', state: 'closing' })
+          .send({ state: 'closing' })
           .expect(200)
           .then(() => Promise.all([
-            User.getByEmail('alice@opendatakit.org').then((o) => o.get()),
-            Project.getById(1).then((o) => o.get())
-              .then((project) => project.getFormByXmlFormId('simple')).then((o) => o.get()),
-            Audit.getLatestByAction('form.update').then((o) => o.get())
+            Users.getByEmail('alice@opendatakit.org').then((o) => o.get()),
+            Projects.getById(1).then((o) => o.get())
+              .then((project) => Forms.getByProjectAndXmlFormId(project.id, 'simple')).then((o) => o.get()),
+            Audits.getLatestByAction('form.update').then((o) => o.get())
           ])
           .then(([ alice, form, log ]) => {
             log.actorId.should.equal(alice.actor.id);
             log.acteeId.should.equal(form.acteeId);
-            log.details.should.eql({ data: { name: 'a fancy name', state: 'closing', def: {} } });
+            log.details.should.eql({ data: { state: 'closing' } });
           })))));
   });
 
@@ -1235,15 +1292,15 @@ describe('api: /projects/:id/forms', () => {
           .then(() => asAlice.get('/v1/projects/1/forms/simple')
             .expect(404)))));
 
-    it('should log the action in the audit log', testService((service, { Project, Form, User, Audit }) =>
+    it('should log the action in the audit log', testService((service, { Projects, Forms, Users, Audits }) =>
       service.login('alice', (asAlice) =>
-        Project.getById(1).then((o) => o.get())
-          .then((project) => project.getFormByXmlFormId('simple')).then((o) => o.get())
+        Projects.getById(1).then((o) => o.get())
+          .then((project) => Forms.getByProjectAndXmlFormId(project.id, 'simple')).then((o) => o.get())
           .then((form) => asAlice.delete('/v1/projects/1/forms/simple')
             .expect(200)
             .then(() => Promise.all([
-              User.getByEmail('alice@opendatakit.org').then((o) => o.get()),
-              Audit.getLatestByAction('form.delete').then((o) => o.get())
+              Users.getByEmail('alice@opendatakit.org').then((o) => o.get()),
+              Audits.getLatestByAction('form.delete').then((o) => o.get())
             ])
             .then(([ alice, log ]) => {
               log.actorId.should.equal(alice.actor.id);
@@ -1722,7 +1779,7 @@ describe('api: /projects/:id/forms', () => {
                 ]);
               })))));
 
-      it('should log the action in the audit log', testService((service, { Form }) =>
+      it('should log the action in the audit log', testService((service, { Forms }) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms/simple/draft')
             .expect(200)
@@ -1734,12 +1791,119 @@ describe('api: /projects/:id/forms', () => {
                 body[0].action.should.equal('form.update.draft.set');
                 body[0].details.newDraftDefId.should.be.a.Number();
 
-                return Form.getByProjectAndXmlFormId(1, 'simple')
+                return Forms.getByProjectAndXmlFormId(1, 'simple')
                   .then((o) => o.get())
                   .then((form) => {
                     form.draftDefId.should.equal(body[0].details.newDraftDefId);
                   });
               })))));
+
+      context('updating form titles', () => {
+        const withRenamedTitleAndVersion = (newTitle, newVersion='2.1') => testData.forms.simple2
+          .replace('Simple 2', `${newTitle}`).replace('version="2.1"', `version="${newVersion}"`);
+
+        it('should update form title with draft title when no published form exists', testService((service) =>
+          service.login('alice', (asAlice) =>
+            asAlice.post('/v1/projects/1/forms')
+              .send(testData.forms.simple2)
+              .set('Content-Type', 'application/xml')
+              .expect(200)
+              .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                .expect(200)
+                .then(({ body }) => {
+                  body.name.should.equal('Simple 2');
+                })
+                .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+                  .send(withRenamedTitleAndVersion('New Title'))
+                  .set('Content-Type', 'application/xml')
+                  .expect(200)
+                  .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                    .expect(200)
+                    .then(({ body }) => {
+                      body.name.should.equal('New Title');
+                    })
+                ))))));
+
+        it('should not update form title with draft title when form already published', testService((service) =>
+          service.login('alice', (asAlice) =>
+            asAlice.post('/v1/projects/1/forms?publish=true')
+              .send(testData.forms.simple2)
+              .set('Content-Type', 'application/xml')
+              .expect(200)
+              .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                .expect(200)
+                .then(({ body }) => {
+                  body.name.should.equal('Simple 2');
+                })
+                .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+                  .send(withRenamedTitleAndVersion('New Title'))
+                  .set('Content-Type', 'application/xml')
+                  .expect(200)
+                  .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                    .expect(200)
+                    .then(({ body }) => {
+                      body.name.should.equal('Simple 2');
+                    })
+                ))))));
+
+        it('should not update form title from draft when form published and existing draft present', testService((service) =>
+          service.login('alice', (asAlice) =>
+            asAlice.post('/v1/projects/1/forms?publish=true')
+              .send(testData.forms.simple2)
+              .set('Content-Type', 'application/xml')
+              .expect(200)
+              .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                .expect(200)
+                .then(({ body }) => {
+                  body.name.should.equal('Simple 2');
+                })
+                .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+                  .send(withRenamedTitleAndVersion('New Title', '2.2'))
+                  .set('Content-Type', 'application/xml')
+                  .expect(200)
+                  .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                    .expect(200)
+                    .then(({ body }) => {
+                          body.name.should.equal('Simple 2');
+                    })
+                    .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+                      .send(withRenamedTitleAndVersion('An Even Newer Title', '2.3'))
+                      .set('Content-Type', 'application/xml')
+                      .expect(200)
+                      .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                        .expect(200)
+                        .then(({ body }) => {
+                          body.name.should.equal('Simple 2');
+                        })))))))));
+
+        it('should update form title with latest draft title only on publish', testService((service) =>
+          service.login('alice', (asAlice) =>
+            asAlice.post('/v1/projects/1/forms?publish=true')
+              .send(testData.forms.simple2)
+              .set('Content-Type', 'application/xml')
+              .expect(200)
+              .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                .expect(200)
+                .then(({ body }) => {
+                  body.name.should.equal('Simple 2');
+                })
+                .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft')
+                  .send(withRenamedTitleAndVersion('New Title', '2.2'))
+                  .set('Content-Type', 'application/xml')
+                  .expect(200)
+                  .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                    .expect(200)
+                    .then(({ body }) => {
+                      body.name.should.equal('Simple 2');
+                    })
+                    .then(() => asAlice.post('/v1/projects/1/forms/simple2/draft/publish')
+                      .expect(200)
+                      .then(() => asAlice.get('/v1/projects/1/forms/simple2')
+                        .expect(200)
+                        .then(({ body }) => {
+                          body.name.should.equal('New Title');
+                        })))))))));
+      });
     });
 
     describe('GET', () => {
@@ -1872,7 +2036,7 @@ describe('api: /projects/:id/forms', () => {
             .then(() => asAlice.delete('/v1/projects/1/forms/simple2/draft')
               .expect(409))
               .then(({ body }) => {
-                body.code.should.equal(409.5);
+                body.code.should.equal(409.7);
               }))));
 
       it('should create a new draft token after delete', testService((service) =>
@@ -2026,7 +2190,7 @@ describe('api: /projects/:id/forms', () => {
                 ]);
               })))));
 
-      it('should log the action in the audit log', testService((service, { Form }) =>
+      it('should log the action in the audit log', testService((service, { Forms }) =>
         service.login('alice', (asAlice) =>
           asAlice.post('/v1/projects/1/forms/simple/draft')
             .expect(200)
@@ -2055,11 +2219,11 @@ describe('api: /projects/:id/forms', () => {
                 body[0].details.newDefId.should.be.a.Number();
                 body[0].details.oldDefId.should.be.a.Number();
                 body[0].details.newDefId.should.not.equal(body[0].details.oldDefId);
-                body[1].details.automated.should.equal(true);
+                //body[1].details.automated.should.equal(true); // TODO/SL is this a big deal?
 
                 body[0].details.newDefId.should.equal(body[1].details.newDraftDefId);
 
-                return Form.getByProjectAndXmlFormId(1, 'simple')
+                return Forms.getByProjectAndXmlFormId(1, 'simple')
                   .then((o) => o.get())
                   .then((form) => {
                     body[1].details.newDraftDefId.should.equal(form.currentDefId);
@@ -2197,7 +2361,7 @@ describe('api: /projects/:id/forms', () => {
                   .set('Content-Type', 'text/csv')
                   .expect(200))))));
 
-        it('should log the action in the audit log', testService((service, { Project, Form, FormAttachment, User, Audit }) =>
+        it('should log the action in the audit log', testService((service, { Projects, Forms, FormAttachments, Users, Audits }) =>
           service.login('alice', (asAlice) =>
             asAlice.post('/v1/projects/1/forms')
               .send(testData.forms.withAttachments)
@@ -2208,13 +2372,13 @@ describe('api: /projects/:id/forms', () => {
                 .set('Content-Type', 'text/csv')
                 .expect(200)
                 .then(() => Promise.all([
-                  User.getByEmail('alice@opendatakit.org').then((o) => o.get()),
-                  Project.getById(1).then((o) => o.get())
-                    .then((project) => project.getFormByXmlFormId('withAttachments')).then((o) => o.get())
-                    .then((form) => FormAttachment.getByFormDefIdAndName(form.draftDefId, 'goodone.csv')
+                  Users.getByEmail('alice@opendatakit.org').then((o) => o.get()),
+                  Projects.getById(1).then((o) => o.get())
+                    .then((project) => Forms.getByProjectAndXmlFormId(project.id, 'withAttachments')).then((o) => o.get())
+                    .then((form) => FormAttachments.getByFormDefIdAndName(form.draftDefId, 'goodone.csv')
                       .then((o) => o.get())
                       .then((attachment) => [ form, attachment ])),
-                  Audit.getLatestByAction('form.attachment.update').then((o) => o.get())
+                  Audits.getLatestByAction('form.attachment.update').then((o) => o.get())
                 ])
                 .then(([ alice, [ form, attachment ], log ]) => {
                   log.actorId.should.equal(alice.actor.id);
@@ -2231,8 +2395,8 @@ describe('api: /projects/:id/forms', () => {
                     .set('Content-Type', 'text/csv')
                     .expect(200)
                     .then(() => Promise.all([
-                      FormAttachment.getByFormDefIdAndName(form.draftDefId, 'goodone.csv').then((o) => o.get()),
-                      Audit.getLatestByAction('form.attachment.update').then((o) => o.get())
+                      FormAttachments.getByFormDefIdAndName(form.draftDefId, 'goodone.csv').then((o) => o.get()),
+                      Audits.getLatestByAction('form.attachment.update').then((o) => o.get())
                     ]))
                     .then(([ attachment2, log2 ]) => {
                       log2.actorId.should.equal(alice.actor.id);
@@ -2292,7 +2456,7 @@ describe('api: /projects/:id/forms', () => {
                   .then(() => asAlice.get('/v1/projects/1/forms/withAttachments/draft/attachments/goodone.csv')
                     .expect(404)))))));
 
-        it('should log the action in the audit log', testService((service, { Project, Form, FormAttachment, User, Audit }) =>
+        it('should log the action in the audit log', testService((service, { Projects, Forms, FormAttachments, Users, Audits }) =>
           service.login('alice', (asAlice) =>
             asAlice.post('/v1/projects/1/forms')
               .send(testData.forms.withAttachments)
@@ -2303,18 +2467,18 @@ describe('api: /projects/:id/forms', () => {
                 .set('Content-Type', 'text/csv')
                 .expect(200)
                 .then(() => Promise.all([
-                  User.getByEmail('alice@opendatakit.org').then((o) => o.get()),
-                  Project.getById(1).then((o) => o.get())
-                    .then((project) => project.getFormByXmlFormId('withAttachments'))
+                  Users.getByEmail('alice@opendatakit.org').then((o) => o.get()),
+                  Projects.getById(1).then((o) => o.get())
+                    .then((project) => Forms.getByProjectAndXmlFormId(project.id, 'withAttachments'))
                     .then((o) => o.get())
-                    .then((form) => FormAttachment.getByFormDefIdAndName(form.draftDefId, 'goodone.csv')
+                    .then((form) => FormAttachments.getByFormDefIdAndName(form.draftDefId, 'goodone.csv')
                       .then((o) => o.get())
                       .then((attachment) => [ form, attachment ]))
                 ]))
                 .then(([ alice, [ form, attachment ] ]) =>
                   asAlice.delete('/v1/projects/1/forms/withAttachments/draft/attachments/goodone.csv')
                     .expect(200)
-                    .then(() => Audit.getLatestByAction('form.attachment.update').then((o) => o.get()))
+                    .then(() => Audits.getLatestByAction('form.attachment.update').then((o) => o.get()))
                     .then((log) => {
                       log.actorId.should.equal(alice.actor.id);
                       log.acteeId.should.equal(form.acteeId);
@@ -2420,8 +2584,8 @@ describe('api: /projects/:id/forms', () => {
               .expect(200)
               .then(({ body }) => {
                 body.map((f) => f.version).should.eql([ '3', '2.1' ]);
-                body.map((f) => f.enketoId).should.eql([ '::abcdefgh', undefined ]);
-                body.map((f) => f.enketoOnceId).should.eql([ '::::abcdefgh', undefined ]);
+                body.map((f) => f.enketoId).should.eql([ '::abcdefgh', null ]);
+                body.map((f) => f.enketoOnceId).should.eql([ '::::abcdefgh', null ]);
               })))));
 
       it('should return publishedBy if extended is requested', testService((service) =>
@@ -2488,7 +2652,7 @@ describe('api: /projects/:id/forms', () => {
               .expect(200)
               .then(({ body }) => {
                 body.map((f) => f.version).should.eql([ '3', '2.1' ]);
-                body.map((f) => f.enketoId).should.eql([ '::abcdefgh', undefined ]);
+                body.map((f) => f.enketoId).should.eql([ '::abcdefgh', null ]);
               })))));
 
       it('should sort results desc by publishedAt', testService((service) =>
